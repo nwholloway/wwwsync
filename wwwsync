@@ -1,10 +1,10 @@
-#! /usr/bin/perl
+#! /bin/perl
 # WWWSync: Upload new modifications to your WWW pages by ftp.
 # Author : Nick Holloway 
 #  Email : Nick.Holloway@alfie.demon.co.uk
 #    WWW : http://www.alfie.demon.co.uk/
 
-$RCSid = '$Id: wwwsync,v 1.4 1997/01/26 12:44:00 alfie Exp alfie $';
+$RCSid = '$Id: wwwsync,v 1.5 1997/06/12 17:25:16 alfie Exp alfie $';
 $help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
@@ -186,9 +186,9 @@ if ( @list == 0 )
 $dir = "";
 for $_ ( @list )
 {
+    chomp;
     if ( /^-([r-][w-][x-]){3}\s+/ )
     {
-	chomp;
 	@x = split( ' ', $_, 9 );
 
 	$path = "$dir/$x[8]";
@@ -205,10 +205,25 @@ for $_ ( @list )
     {
 	next;
     }
+    elsif ( /^[cblps]([r-][w-][x-]){3}\s+/ )
+    {
+	@x = split( ' ', $_, 9 );
+	$path = "$dir/$x[8]";
+
+	print "Ignoring $x[8]\n" if $opt_v;
+	if ( ! defined( $loc_type{ $path } ) )
+	{
+	    warn "ignoring \"$path\": not a file or directory\n";
+	}
+	else
+	{
+	    die "$0: \"$path\": exists locally, and is not a file or directory remotely\n";
+	}
+    }
     elsif ( /^(.*):$/ )
     {
-	$dir = $1;
-	$dir =~ s|^\.||;
+	$dir = "/$1";
+	$dir =~ s|^/\./|/|;	# some FTP daemons report "./directory:"
 
 	if ( "$dir/" !~ m/$rem_ignore/o )
 	{
