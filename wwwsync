@@ -4,7 +4,7 @@
 #  Email : Nick.Holloway@alfie.demon.co.uk
 #    WWW : http://www.alfie.demon.co.uk/
 
-$RCSid = '$Id: wwwsync,v 1.3 1996/08/13 19:38:58 alfie Exp alfie $';
+$RCSid = '$Id: wwwsync,v 1.4 1997/01/26 12:44:00 alfie Exp alfie $';
 $help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
@@ -17,6 +17,7 @@ options:
     -n      : just display the actions that would be taken, not perform them
     -v      : be more verbose in reporting
     -q      : operate quietly
+    -P      : use passive transfers
     -f file : read settings from configuration file
     -l dir  : local directory for WWW pages
     -r dir  : remote directory for WWW pages
@@ -58,10 +59,10 @@ $rem_dir = "";
 $0 =~ s%.*/%%;
 $0 =~ s%\.pl$%%;
 
-die "usage: $0 [-n] [-v] [-q] [-f config] [-h ftphost] [-u user] [-p password] [-l loc_dir] [-r rem_dir]\n"
+die "usage: $0 [-n] [-v] [-q] [-P] [-f config] [-h ftphost] [-u user] [-p password] [-l loc_dir] [-r rem_dir]\n"
   . "   or: $0 -H (to display more information)\n"
   . "   or: $0 -V\n"
-    unless getopts( 'nvqf:h:u:p:l:r:HVD' ) && @ARGV == 0;
+    unless getopts( 'nvqf:h:u:p:l:r:HVDP' ) && @ARGV == 0;
 
 die $help               if $opt_H;
 die "WWWSync: $RCSid\n" if $opt_V;
@@ -80,6 +81,7 @@ $rem_dir  = $opt_r if $opt_r;
 $ftphost  = $opt_h if $opt_h;
 $user     = $opt_u if $opt_u;
 $password = $opt_p if $opt_p;
+$passive  = 1      if $opt_P;
 
 die "$0: no local directory specified for WWW pages\n"
     unless $loc_dir ne "";
@@ -150,9 +152,7 @@ while ( @dir )
 # ---------------------------------------------------------------------------
 print "Connecting to ftp server... \n" unless $opt_q;
 
-$ftp = Net::FTP->new( $ftphost );
-
-$ftp->debug( 1 ) if $opt_D;
+$ftp = Net::FTP->new( $ftphost, Debug => $opt_D, Passive => $passive );
 
 if ( $user ne "" )
 {
@@ -234,14 +234,14 @@ for $path ( reverse @rem_path )
 	if ( $rem_type{ $path } eq "d" )
 	{
 	    print "rmdir  $path\n" unless $opt_q;
-	    $ftp->RMD( $base.$path ) 
+	    $ftp->rmdir( $base.$path ) 
 		|| die "$0: $path: rmdir failed: \"", $ftp->message, "\"\n"
 		    unless $opt_n;
 	}
 	else
 	{
 	    print "delete $path\n" unless $opt_q;
-	    $ftp->DELE( $base.$path )
+	    $ftp->delete( $base.$path )
 		|| die "$0: $path: delete failed: \"", $ftp->message, "\"\n"
 		    unless $opt_n;
 	}
@@ -257,8 +257,10 @@ for $path ( @loc_path )
 	if ( $rem_type{ $path } ne "d" )
 	{
 	    print "mkdir  $path\n" unless $opt_q;
-	    $ftp->MKD( $base.$path )
-		|| die "$0: $path: mkdir failed: \"", $ftp->message, "\"\n"
+	    $ftp->mkdir( $base.$path )
+		# Ignore error for now, as only more recent versions of
+		# Net::FTP deal with servers that fail to follow RFC959.
+		# || die "$0: $path: mkdir failed: \"", $ftp->message, "\"\n"
 		    unless $opt_n;
 	}
     }
@@ -270,12 +272,14 @@ for $path ( @loc_path )
 	    if ( $path =~ m/$text/o )
 	    {
 		$ftp->ascii()
-		    || die "$0: mode ascii: \"", $ftp->message, "\"\n";
+		    || die "$0: mode ascii: \"", $ftp->message, "\"\n"
+			unless $opt_n;
 	    }
 	    else
 	    {
 		$ftp->binary()
-		    || die "$0: mode binary: \"", $ftp->message, "\"\n";
+		    || die "$0: mode binary: \"", $ftp->message, "\"\n"
+			unless $opt_n;
 	    }
 	    $ftp->put( $loc_dir.$path, $base.$path."-in" )
 		|| die "$0: $path: put failed: \"", $ftp->message, "\"\n"
