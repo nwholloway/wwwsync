@@ -4,7 +4,7 @@
 #  Email : Nick.Holloway@alfie.demon.co.uk
 #    WWW : http://www.alfie.demon.co.uk/
 
-$RCSid = '$Id: wwwsync,v 1.7 1998/08/26 06:28:01 alfie Exp alfie $';
+$RCSid = '$Id: wwwsync,v 1.8 1999/04/10 15:29:59 alfie Exp alfie $';
 $help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
@@ -49,7 +49,7 @@ $passive  = 0;
 $recurse  = 0;
 
 # calculate time difference between local and remote machine
-$timewarp = 1;
+$timewarp = 0;
 
 # local directory containing WWW pages
 $loc_dir = "";
@@ -199,9 +199,31 @@ print "Scanning remote directory... \n" unless $opt_q;
 if ( $timewarp )
 {
     $timewarp = time;
-    $tstamp = $ftp->put_unique( "/dev/null", "tstamp" )
-	|| die "$0: unable to create timestamp file: \"", $ftp->message, "\"\n";
-    $tstamp = "/$tstamp";
+    $tstamp = $ftp->put_unique( "/dev/null", "tstamp" );
+    if ( $tstamp )
+    {
+	$tstamp = "/$tstamp";
+    }
+    else
+    {
+	# Pick a name that shouldn't clash
+	for ( '.' , '$', '_', '%', '~', '42' )
+	{
+	    $path = "/${_}tstamp";
+	    if ( $path !~ m/$rem_ignore/o && ! $loc_type{ $path } )
+	    {
+		$tstamp = $path;
+		$ftp->put( "/dev/null", $base.$tstamp )
+		    || die "$0: $path: unable to create timestamp file: \"", 
+							$ftp->message, "\"\n";
+		last;
+	    }
+	}
+	if ( ! $tstamp )
+	{
+	    die "$0: unable to create unique timestamp file\n";
+	}
+    }
 }
 
 @dirs = ( "" );
@@ -317,6 +339,7 @@ if ( $timewarp )
     print "Local : ", &time2ls( $timewarp ), "\n" if $opt_D;
     print "Remote: ", &time2ls( $rem_time{ $tstamp } ), "\n" if $opt_D;
     $timewarp = $rem_time{ $tstamp } - $timewarp;
+    $timewarp -= $timewarp % 60;
     print "Time difference is ", $timewarp, " seconds\n" if $opt_v;
 }
 
