@@ -4,7 +4,7 @@
 #  Email : Nick.Holloway@alfie.demon.co.uk
 #    WWW : http://www.alfie.demon.co.uk/
 
-$RCSid = '$Id: wwwsync,v 1.6 1998/01/11 09:30:36 alfie Exp alfie $';
+$RCSid = '$Id: wwwsync,v 1.7 1998/08/26 06:28:01 alfie Exp alfie $';
 $help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
@@ -21,9 +21,11 @@ options:
     -f file : read settings from configuration file
     -l dir  : local directory for WWW pages
     -r dir  : remote directory for WWW pages
-    -h host : ftp host to connect to
+    -h host : ftp host to connect to (use host:port for non-standard port)
     -u user : user to login
     -p pass : password
+    -R      : recurse to list each directory seperately
+    -T      : calculate time difference (also allows for non-GMT timestamps)
 EOF
 #    -L      : convert filenames to lower case
 
@@ -39,6 +41,15 @@ use Time::Local;
 $ftphost  = "";
 $user     = "";
 $password = "";
+
+# use passive FTP connections
+$passive  = 0;
+
+# resurse to list each directory seperately
+$recurse  = 0;
+
+# calculate time difference between local and remote machine
+$timewarp = 1;
 
 # local directory containing WWW pages
 $loc_dir = "";
@@ -59,10 +70,12 @@ $rem_dir = "";
 $0 =~ s%.*/%%;
 $0 =~ s%\.pl$%%;
 
-die "usage: $0 [-n] [-v] [-q] [-P] [-f config] [-h ftphost] [-u user] [-p password] [-l loc_dir] [-r rem_dir]\n"
+die "usage: $0 [-n] [-v] [-q] [-f config]\n"
+  . "   or: $0 [-n] [-v] [-q] [-P] [-R] [-h ftphost] [-u user] [-p password]\n"
+  . "                    [-l loc_dir] [-r rem_dir]\n"
   . "   or: $0 -H (to display more information)\n"
-  . "   or: $0 -V\n"
-    unless getopts( 'nvqf:h:u:p:l:r:HVDP' ) && @ARGV == 0;
+  . "   or: $0 -V (to display version)\n"
+    unless getopts( 'nvqf:h:u:p:l:r:HVDPRT' ) && @ARGV == 0;
 
 die $help               if $opt_H;
 die "WWWSync: $RCSid\n" if $opt_V;
@@ -79,9 +92,14 @@ if ( $opt_f )
 $loc_dir  = $opt_l if $opt_l;
 $rem_dir  = $opt_r if $opt_r;
 $ftphost  = $opt_h if $opt_h;
+$ftpport  = ( $ftphost =~ s/:(\d+)$// ) ? $1 : 21;
 $user     = $opt_u if $opt_u;
 $password = $opt_p if $opt_p;
 $passive  = 1      if $opt_P;
+$recurse  = 1      if $opt_R;
+$timewarp = 1      if $opt_T;
+
+$| = 1 if $opt_D;
 
 die "$0: no local directory specified for WWW pages\n"
     unless $loc_dir ne "";
@@ -112,7 +130,7 @@ while ( @dir )
     $dir = pop @dir;
     opendir( DIR, $dir ) 
 	|| die "$0: can't read directory \"$dir\": $!\n";
-    while ( $file = readdir( DIR ) )
+    while ( defined( $file = readdir( DIR ) ) )
     {
 	next if $file =~ /^\.\.?$/;		# Skip "." and ".."
 
@@ -152,7 +170,10 @@ while ( @dir )
 # ---------------------------------------------------------------------------
 print "Connecting to ftp server... \n" unless $opt_q;
 
-$ftp = Net::FTP->new( $ftphost, Debug => $opt_D, Passive => $passive );
+$ftp = Net::FTP->new( $ftphost, Port => $ftpport, Debug => $opt_D, Passive => $passive );
+
+die "$0: $ftphost ($ftpport): unable to connect\n"
+    unless defined( $ftp );
 
 if ( $user ne "" )
 {
@@ -175,81 +196,135 @@ $ftp->cwd( $rem_dir )
 # ---------------------------------------------------------------------------
 print "Scanning remote directory... \n" unless $opt_q;
 
-@list = $ftp->ls( '-lRa' );
-
-if ( @list == 0 )
+if ( $timewarp )
 {
-    die "Please Report!!!: nothing returned by 'ls -lRa'\n",
-	"FTP message: ", $ftp->message, "\n";
+    $timewarp = time;
+    $tstamp = $ftp->put_unique( "/dev/null", "tstamp" )
+	|| die "$0: unable to create timestamp file: \"", $ftp->message, "\"\n";
+    $tstamp = "/$tstamp";
 }
 
-$dir = "";
-for $_ ( @list )
+@dirs = ( "" );
+while ( @dirs ) 
 {
-    chomp;
-    print STDERR "<<< $_\n" if $opt_D;
-    if ( /^-([r-][w-][x-]){3}\s+/ )
+    $dir = pop @dirs;
+
+    # Change to subdirectory (required if recursing each directory)
+    $ftp->cwd( "$base$dir" )
+	|| die "$0: $dir: unable to change directory: \"", $ftp->message, "\"\n"
+	    if $dir ne "";
+
+    @list = $recurse ? $ftp->dir() : $ftp->ls( '-lRa' );
+
+    if ( @list == 0 )
     {
-	@x = split( ' ', $_, 9 );
-
-	$path = "$dir/$x[8]";
-
-	next if $path =~ m/$rem_ignore/o;
-
-	push( @rem_path, $path );
-	$rem_time{ $path } = &ls2time( $x[5], $x[6], $x[7] );
-	$rem_type{ $path } = "f";
-
-	print &time2ls( $rem_time{ $path } ), " $path\n" if $opt_v;
+	die "Please Report!!!: nothing for directory listing\n",
+	    "FTP message: ", $ftp->message, "\n";
     }
-    elsif ( /^d([r-][w-][x-]){3}\s+/ || /^$/ || /^total \d+$/ )
-    {
-	next;
-    }
-    elsif ( /^[cblps]([r-][w-][x-]){3}\s+/ )
-    {
-	@x = split( ' ', $_, 9 );
-	$path = "$dir/$x[8]";
 
-	print "Ignoring $x[8]\n" if $opt_v;
-	if ( ! defined( $loc_type{ $path } ) )
+    for $_ ( @list )
+    {
+	chomp;
+	print STDERR "<<< $_\n" if $opt_D;
+	if ( /^-([r-][w-][x-]){3}\s+/ )
 	{
-	    warn "ignoring \"$path\": not a file or directory\n";
+	    @x = split( ' ', $_, 9 );
+
+	    $path = "$dir/$x[8]";
+
+	    next if $path =~ m/$rem_ignore/o;
+
+	    push( @rem_path, $path )
+		unless $timewarp && $path eq $tstamp;
+	    $rem_time{ $path } = &ls2time( $x[5], $x[6], $x[7] );
+	    $rem_type{ $path } = "f";
+
+	    print &time2ls( $rem_time{ $path } ), " $path\n" if $opt_v;
+	}
+	elsif ( /^d([r-][w-][x-]){3}\s+/ )
+	{
+	    next if ! $recurse;
+
+	    @x = split( ' ', $_, 9 );
+
+	    next if $x[8] =~ /^\.\.?$/;
+
+	    $subdir = "$dir/$x[8]";
+
+	    if ( "$subdir/" !~ m/$rem_ignore/o )
+	    {
+		push( @dirs, $subdir );
+		push( @rem_path, $subdir );
+		$rem_type{ $subdir } = "d";
+		print "--- -- --:-- $subdir\n" if $opt_v;
+	    }
+	}
+	elsif ( /^$/ || /^total \d+$/ )
+	{
+	    next;
+	}
+	elsif ( /^[cblps]([r-][w-][x-]){3}\s+/ )
+	{
+	    @x = split( ' ', $_, 9 );
+	    $path = "$dir/$x[8]";
+
+	    print "Ignoring $x[8]\n" if $opt_v;
+	    if ( ! defined( $loc_type{ $path } ) )
+	    {
+		warn "ignoring \"$path\": not a file or directory\n";
+	    }
+	    else
+	    {
+		die "$0: \"$path\": exists locally,"
+			    . " and is not a file or directory remotely\n";
+	    }
+	}
+	elsif ( /^(.*):$/ )
+	{
+	    warn "Please Report!!!:\n*** Bogus: $_" if $recurse;
+
+	    $dir = "/$1";
+	    $dir =~ s|^/\./|/|;	# some FTP daemons report "./directory:"
+
+	    if ( $dir eq "/." )	# some FTP daemons start listing with ".:"
+	    {
+		$dir = "";
+		next;
+	    }
+
+	    if ( "$dir/" !~ m/$rem_ignore/o )
+	    {
+		push( @rem_path, $dir );
+		$rem_type{ $dir } = "d";
+		print "--- -- --:-- $dir\n" if $opt_v;
+	    }
 	}
 	else
 	{
-	    die "$0: \"$path\": exists locally, and is not a file or directory remotely\n";
+	    if ( ! $recurse && @rem_path == 0 )
+	    {
+		die "$0: try using '-R' flag or setting '$recurse = 1'\n";
+	    }
+	    warn "Please Report!!!:\n*** Bogus: $_";
 	}
     }
-    elsif ( /^(.*):$/ )
-    {
-	$dir = "/$1";
-	$dir =~ s|^/\./|/|;	# some FTP daemons report "./directory:"
+}
 
-	if ( $dir eq "/." )	# some FTP daemons start listing with ".:"
-	{
-	    $dir = "";
-	    next;
-	}
-
-	if ( "$dir/" !~ m/$rem_ignore/o )
-	{
-	    push( @rem_path, $dir );
-	    $rem_type{ $dir } = "d";
-	    print "--- -- --:-- $dir\n" if $opt_v;
-	}
-    }
-    else
-    {
-	warn "Please Report!!!:\nBogus: $_";
-    }
+if ( $timewarp )
+{
+    $ftp->delete( $base.$tstamp )
+	|| die "$0: $tstamp: delete failed: \"", $ftp->message, "\"\n";
+    print "Local : ", &time2ls( $timewarp ), "\n" if $opt_D;
+    print "Remote: ", &time2ls( $rem_time{ $tstamp } ), "\n" if $opt_D;
+    $timewarp = $rem_time{ $tstamp } - $timewarp;
+    print "Time difference is ", $timewarp, " seconds\n" if $opt_v;
 }
 
 # ---------------------------------------------------------------------------
 print "Updating remote directory...\n" unless $opt_q;
 
 # Scan remote list, deleting files and directories that should no longer exist
-for $path ( reverse @rem_path )
+for $path ( reverse sort @rem_path )
 {
     if ( $rem_type{ $path } ne $loc_type{ $path } )
     {
@@ -272,7 +347,7 @@ for $path ( reverse @rem_path )
 
 # Scan local list, making directories that are don't exist on the ftp
 # server, and uploading files that are either new or changed.
-for $path ( @loc_path )
+for $path ( sort @loc_path )
 {
     if ( $loc_type{ $path } eq "d" )
     {
@@ -288,7 +363,7 @@ for $path ( @loc_path )
     }
     else
     {
-	if ( $loc_time{ $path } > $rem_time{ $path } )
+	if ( $loc_time{ $path } + $timewarp > $rem_time{ $path } )
 	{
 	    print "upload $path\n" unless $opt_q;
 	    if ( $path =~ m/$text/o )
