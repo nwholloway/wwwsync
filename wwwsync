@@ -4,7 +4,7 @@
 #  Email : Nick.Holloway@alfie.demon.co.uk
 #    WWW : http://www.alfie.demon.co.uk/
 
-$RCSid = '$Id: wwwsync,v 1.9 1999/05/15 07:44:48 alfie Exp alfie $';
+$RCSid = '$Id: wwwsync,v 1.10 1999/12/06 19:55:30 alfie Exp alfie $';
 $help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
@@ -178,20 +178,20 @@ die "$0: $ftphost ($ftpport): unable to connect\n"
 if ( $user ne "" )
 {
     $ftp->login( $user, $password )
-	|| die "$0: login failed: \"", $ftp->message, "\"\n";
+	|| die "$0: login failed: \"", &nonl( $ftp->message ), "\"\n";
 }
 else
 {
     $ftp->login()
-	|| die "$0: login failed: \"", $ftp->message, "\"\n";
+	|| die "$0: login failed: \"", &nonl( $ftp->message ), "\"\n";
 }
 
 $ftp->cwd( $rem_dir )
-    || die "$0: $rem_dir: unable to change directory: \"", $ftp->message, "\"\n"
+    || die "$0: $rem_dir: unable to change directory: \"", &nonl( $ftp->message ), "\"\n"
 	if $rem_dir ne "";
 
 ( $base = $ftp->pwd() )
-    || die "$0: can't find current directory: \"", $ftp->message, "\"\n";
+    || die "$0: can't find current directory: \"", &nonl( $ftp->message ), "\"\n";
 
 # ---------------------------------------------------------------------------
 print "Scanning remote directory... \n" unless $opt_q;
@@ -215,7 +215,7 @@ if ( $timewarp )
 		$tstamp = $path;
 		$ftp->put( "/dev/null", $base.$tstamp )
 		    || die "$0: $path: unable to create timestamp file: \"", 
-							$ftp->message, "\"\n";
+							&nonl( $ftp->message ), "\"\n";
 		last;
 	    }
 	}
@@ -233,7 +233,7 @@ while ( @dirs )
 
     # Change to subdirectory (required if recursing each directory)
     $ftp->cwd( "$base$dir" )
-	|| die "$0: $dir: unable to change directory: \"", $ftp->message, "\"\n"
+	|| die "$0: $dir: unable to change directory: \"", &nonl( $ftp->message ), "\"\n"
 	    if $dir ne "";
 
     @list = $recurse ? $ftp->dir() : $ftp->ls( '-lRa' );
@@ -241,7 +241,7 @@ while ( @dirs )
     if ( @list == 0 )
     {
 	die "Please Report!!!: nothing for directory listing\n",
-	    "FTP message: ", $ftp->message, "\n";
+	    "FTP message: ", &nonl( $ftp->message ), "\n";
     }
 
     for $_ ( @list )
@@ -335,7 +335,7 @@ while ( @dirs )
 if ( $timewarp )
 {
     $ftp->delete( $base.$tstamp )
-	|| die "$0: $tstamp: delete failed: \"", $ftp->message, "\"\n";
+	|| die "$0: $tstamp: delete failed: \"", &nonl( $ftp->message ), "\"\n";
     print "Local : ", &time2ls( $timewarp ), "\n" if $opt_D;
     print "Remote: ", &time2ls( $rem_time{ $tstamp } ), "\n" if $opt_D;
     $timewarp = $rem_time{ $tstamp } - $timewarp;
@@ -354,15 +354,15 @@ for $path ( reverse sort @rem_path )
 	if ( $rem_type{ $path } eq "d" )
 	{
 	    print "rmdir  $path\n" unless $opt_q;
-	    $ftp->rmdir( $base.$path ) 
-		|| die "$0: $path: rmdir failed: \"", $ftp->message, "\"\n"
+	    $ftp->rmdir( $base.$path ) || $ftp->status == Net::FTP::CMD_OK
+		|| die "$0: $path: rmdir failed: \"", &nonl( $ftp->message ), "\"\n"
 		    unless $opt_n;
 	}
 	else
 	{
 	    print "delete $path\n" unless $opt_q;
 	    $ftp->delete( $base.$path )
-		|| die "$0: $path: delete failed: \"", $ftp->message, "\"\n"
+		|| die "$0: $path: delete failed: \"", &nonl( $ftp->message ), "\"\n"
 		    unless $opt_n;
 	}
     }
@@ -380,7 +380,7 @@ for $path ( sort @loc_path )
 	    $ftp->mkdir( $base.$path )
 		# Ignore error for now, as only more recent versions of
 		# Net::FTP deal with servers that fail to follow RFC959.
-		# || die "$0: $path: mkdir failed: \"", $ftp->message, "\"\n"
+		# || die "$0: $path: mkdir failed: \"", &nonl( $ftp->message ), "\"\n"
 		    unless $opt_n;
 	}
     }
@@ -392,20 +392,20 @@ for $path ( sort @loc_path )
 	    if ( $path =~ m/$text/o )
 	    {
 		$ftp->ascii()
-		    || die "$0: mode ascii: \"", $ftp->message, "\"\n"
+		    || die "$0: mode ascii: \"", &nonl( $ftp->message ), "\"\n"
 			unless $opt_n;
 	    }
 	    else
 	    {
 		$ftp->binary()
-		    || die "$0: mode binary: \"", $ftp->message, "\"\n"
+		    || die "$0: mode binary: \"", &nonl( $ftp->message ), "\"\n"
 			unless $opt_n;
 	    }
 	    $ftp->put( $loc_dir.$path, $base.$path."-in" )
-		|| die "$0: $path: put failed: \"", $ftp->message, "\"\n"
+		|| die "$0: $path: put failed: \"", &nonl( $ftp->message ), "\"\n"
 		    unless $opt_n;
 	    $ftp->rename( $base.$path."-in", $base.$path ) 
-		|| die "$0: $path: rename failed: \"", $ftp->message, "\"\n"
+		|| die "$0: $path: rename failed: \"", &nonl( $ftp->message ), "\"\n"
 		    unless $opt_n;
 	}
 	else
@@ -419,7 +419,7 @@ for $path ( sort @loc_path )
 print "Done.\n" unless $opt_q;
 
 $ftp->quit()
-    || warn "$0: quit returned: \"", $ftp->message, "\"\n";
+    || warn "$0: quit returned: \"", &nonl( $ftp->message ), "\"\n";
 
 # ---------------------------------------------------------------------------
 
@@ -504,4 +504,14 @@ sub glob2re
     eval '/$pattern/';			# Test R.E.
 
     $@ ? undef : $pattern;
+}
+
+#   Remove newline from end of text, and return text.
+sub nonl
+{
+    local( $text ) = @_;
+
+    chomp( $text );
+
+    return $text;
 }
