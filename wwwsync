@@ -4,7 +4,11 @@
 #  Email : Nick.Holloway@alfie.demon.co.uk
 #    WWW : http://www.alfie.demon.co.uk/
 
-$RCSid = '$Id: wwwsync,v 1.10 1999/12/06 19:55:30 alfie Exp alfie $';
+$RCSid = '$Id: wwwsync,v 1.11 2000/08/19 13:32:22 alfie Exp alfie $';
+$revision = (split / /, $RCSid )[2];
+$version = <<"EOF";
+WWWSync $revision (Perl $], Net::FTP $Net::FTP::VERSION)
+EOF
 $help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
@@ -26,6 +30,8 @@ options:
     -p pass : password
     -R      : recurse to list each directory seperately
     -T      : calculate time difference (also allows for non-GMT timestamps)
+    -C      : set file permissions on remote files
+    -F      : upload file irrespective of timestamps
 EOF
 #    -L      : convert filenames to lower case
 
@@ -51,6 +57,9 @@ $recurse  = 0;
 # calculate time difference between local and remote machine
 $timewarp = 0;
 
+# set file permissions on remote files
+$chmod    = 0;
+
 # local directory containing WWW pages
 $loc_dir = "";
 $rem_dir = "";
@@ -75,10 +84,12 @@ die "usage: $0 [-n] [-v] [-q] [-f config]\n"
   . "                    [-l loc_dir] [-r rem_dir]\n"
   . "   or: $0 -H (to display more information)\n"
   . "   or: $0 -V (to display version)\n"
-    unless getopts( 'nvqf:h:u:p:l:r:HVDPRT' ) && @ARGV == 0;
+    unless getopts( 'nvqf:h:u:p:l:r:HVDPRTCF' ) && @ARGV == 0;
 
-die $help               if $opt_H;
-die "WWWSync: $RCSid\n" if $opt_V;
+die $help     if $opt_H;
+die $version  if $opt_V;
+
+print "Version: $version" if $opt_D;
 
 # ---------------------------------------------------------------------------
 if ( $opt_f )
@@ -98,6 +109,7 @@ $password = $opt_p if $opt_p;
 $passive  = 1      if $opt_P;
 $recurse  = 1      if $opt_R;
 $timewarp = 1      if $opt_T;
+$chmod    = 1      if $opt_C;
 
 $| = 1 if $opt_D;
 
@@ -156,7 +168,10 @@ while ( @dir )
 	    push( @loc_path, $path );
 	    $loc_type{ $path } = "f";
 	    $loc_time{ $path } = ( stat( _ ) )[9];
-	    print &time2ls( $loc_time{ $path } ), " $path\n"
+	    $loc_mode{ $path } = sprintf "0%03o", ( ( stat( _ ) )[2] & 0777 );
+	    # TODO: map path to permission (mainly for Win32)
+	    print &time2ls( $loc_time{ $path } ), " $path",
+			    ( $chmod ? " $loc_mode{$path}" : "" ), "\n"
 		if $opt_v;
 	}
 	else
@@ -178,20 +193,25 @@ die "$0: $ftphost ($ftpport): unable to connect\n"
 if ( $user ne "" )
 {
     $ftp->login( $user, $password )
-	|| die "$0: login failed: \"", &nonl( $ftp->message ), "\"\n";
+	|| &ftp_error( undef, "login failed", $ftp );
 }
 else
 {
     $ftp->login()
-	|| die "$0: login failed: \"", &nonl( $ftp->message ), "\"\n";
+	|| &ftp_error( undef, "login failed", $ftp );
 }
 
 $ftp->cwd( $rem_dir )
-    || die "$0: $rem_dir: unable to change directory: \"", &nonl( $ftp->message ), "\"\n"
+    || &ftp_error( $rem_dir, "unable to change directory", $ftp )
 	if $rem_dir ne "";
 
 ( $base = $ftp->pwd() )
-    || die "$0: can't find current directory: \"", &nonl( $ftp->message ), "\"\n";
+    || &ftp_error( $rem_dir, "can't find current directory", $ftp );
+
+$base = "" if $base eq "/";
+
+# Are we talking to a win32 server (with case insensitive filesystem)
+$win32 = $ftp->quot( "syst" ) && $ftp->message() =~ /Windows/;
 
 # ---------------------------------------------------------------------------
 print "Scanning remote directory... \n" unless $opt_q;
@@ -214,8 +234,7 @@ if ( $timewarp )
 	    {
 		$tstamp = $path;
 		$ftp->put( "/dev/null", $base.$tstamp )
-		    || die "$0: $path: unable to create timestamp file: \"", 
-							&nonl( $ftp->message ), "\"\n";
+		    || &ftp_error( $path, "unable to create timestamp file", $ftp );
 		last;
 	    }
 	}
@@ -233,12 +252,12 @@ while ( @dirs )
 
     # Change to subdirectory (required if recursing each directory)
     $ftp->cwd( "$base$dir" )
-	|| die "$0: $dir: unable to change directory: \"", &nonl( $ftp->message ), "\"\n"
+	|| &ftp_error( $dir, "unable to change directory", $ftp )
 	    if $dir ne "";
 
-    @list = $recurse ? $ftp->dir() : $ftp->ls( '-lRa' );
+    @list = $recurse ? $ftp->dir( '-la' ) : $ftp->ls( '-lRa' );
 
-    if ( @list == 0 )
+    if ( @list == 0 && $ftp->status != Net::FTP::CMD_OK )
     {
 	die "Please Report!!!: nothing for directory listing\n",
 	    "FTP message: ", &nonl( $ftp->message ), "\n";
@@ -259,14 +278,15 @@ while ( @dirs )
 	    push( @rem_path, $path )
 		unless $timewarp && $path eq $tstamp;
 	    $rem_time{ $path } = &ls2time( $x[5], $x[6], $x[7] );
+	    $rem_mode{ $path } = &ls2mode( $x[0] );
 	    $rem_type{ $path } = "f";
 
-	    print &time2ls( $rem_time{ $path } ), " $path\n" if $opt_v;
+	    print &time2ls( $rem_time{ $path } ), " $path",
+			    ( $chmod ? " $rem_mode{$path}" : "" ), "\n"
+		if $opt_v;
 	}
 	elsif ( /^d([r-][w-][sStTx-]){3}\s+/ )
 	{
-	    next if ! $recurse;
-
 	    @x = split( ' ', $_, 9 );
 
 	    next if $x[8] =~ /^\.\.?$/;
@@ -275,10 +295,11 @@ while ( @dirs )
 
 	    if ( "$subdir/" !~ m/$rem_ignore/o )
 	    {
-		push( @dirs, $subdir );
 		push( @rem_path, $subdir );
 		$rem_type{ $subdir } = "d";
 		print "--- -- --:-- $subdir\n" if $opt_v;
+
+		push( @dirs, $subdir ) if $recurse;
 	    }
 	}
 	elsif ( /^$/ || /^total \d+$/ )
@@ -314,6 +335,8 @@ while ( @dirs )
 		next;
 	    }
 
+	    next;
+
 	    if ( "$dir/" !~ m/$rem_ignore/o )
 	    {
 		push( @rem_path, $dir );
@@ -335,7 +358,7 @@ while ( @dirs )
 if ( $timewarp )
 {
     $ftp->delete( $base.$tstamp )
-	|| die "$0: $tstamp: delete failed: \"", &nonl( $ftp->message ), "\"\n";
+	|| &ftp_error( $tstamp, "delete failed", $ftp );
     print "Local : ", &time2ls( $timewarp ), "\n" if $opt_D;
     print "Remote: ", &time2ls( $rem_time{ $tstamp } ), "\n" if $opt_D;
     $timewarp = $rem_time{ $tstamp } - $timewarp;
@@ -347,72 +370,20 @@ if ( $timewarp )
 print "Updating remote directory...\n" unless $opt_q;
 
 # Scan remote list, deleting files and directories that should no longer exist
-for $path ( reverse sort @rem_path )
-{
-    if ( $rem_type{ $path } ne $loc_type{ $path } )
-    {
-	if ( $rem_type{ $path } eq "d" )
-	{
-	    print "rmdir  $path\n" unless $opt_q;
-	    $ftp->rmdir( $base.$path ) || $ftp->status == Net::FTP::CMD_OK
-		|| die "$0: $path: rmdir failed: \"", &nonl( $ftp->message ), "\"\n"
-		    unless $opt_n;
-	}
-	else
-	{
-	    print "delete $path\n" unless $opt_q;
-	    $ftp->delete( $base.$path )
-		|| die "$0: $path: delete failed: \"", &nonl( $ftp->message ), "\"\n"
-		    unless $opt_n;
-	}
-    }
-}
 
 # Scan local list, making directories that are don't exist on the ftp
 # server, and uploading files that are either new or changed.
-for $path ( sort @loc_path )
+
+if ( &pathclash )
 {
-    if ( $loc_type{ $path } eq "d" )
-    {
-	if ( $rem_type{ $path } ne "d" )
-	{
-	    print "mkdir  $path\n" unless $opt_q;
-	    $ftp->mkdir( $base.$path )
-		# Ignore error for now, as only more recent versions of
-		# Net::FTP deal with servers that fail to follow RFC959.
-		# || die "$0: $path: mkdir failed: \"", &nonl( $ftp->message ), "\"\n"
-		    unless $opt_n;
-	}
-    }
-    else
-    {
-	if ( $loc_time{ $path } + $timewarp > $rem_time{ $path } )
-	{
-	    print "upload $path\n" unless $opt_q;
-	    if ( $path =~ m/$text/o )
-	    {
-		$ftp->ascii()
-		    || die "$0: mode ascii: \"", &nonl( $ftp->message ), "\"\n"
-			unless $opt_n;
-	    }
-	    else
-	    {
-		$ftp->binary()
-		    || die "$0: mode binary: \"", &nonl( $ftp->message ), "\"\n"
-			unless $opt_n;
-	    }
-	    $ftp->put( $loc_dir.$path, $base.$path."-in" )
-		|| die "$0: $path: put failed: \"", &nonl( $ftp->message ), "\"\n"
-		    unless $opt_n;
-	    $ftp->rename( $base.$path."-in", $base.$path ) 
-		|| die "$0: $path: rename failed: \"", &nonl( $ftp->message ), "\"\n"
-		    unless $opt_n;
-	}
-	else
-	{
-	    print "leave  $path\n" if $opt_v;
-	}
-    }
+    &delete;
+    &upload;
+}
+else
+{
+    &upload_new;
+    &upload_modified;
+    &delete;
 }
 
 # ---------------------------------------------------------------------------
@@ -422,6 +393,204 @@ $ftp->quit()
     || warn "$0: quit returned: \"", &nonl( $ftp->message ), "\"\n";
 
 # ---------------------------------------------------------------------------
+
+#   Returns true if a path on the server clashes with a path to be
+# uploaded.  This can either be because a path has changed from a
+# directory to a file (or back), or if the case of a path has changed
+# and we are uploading to a case-insensitive filesystem.
+sub pathclash
+{
+    local( $lpath, $rpath );
+    local( %lower );
+
+    for $rpath ( @rem_path )
+    {
+	if ( $loc_type{ $rpath } ne "" 
+	    && $rem_type{ $rpath } ne $loc_type{ $rpath } )
+	{
+	    return 1;
+	}
+    }
+
+    if ( $win32 )
+    {
+	for $lpath ( @loc_path )
+	{
+	    $rpath = $lower{ "\L$lpath" };
+	    die "$0: $lpath & $rpath: clash on case-insensitive filesystem\n"
+		if $rpath ne "";
+	    $lower{ "\L$lpath" } = $lpath;
+	}
+
+	for $rpath ( @rem_path )
+	{
+	    $lpath = $lower{ "\L$rpath" };
+	    if ( $lpath ne "" && $lpath ne $rpath )
+	    {
+		print "Case changed: $rpath => $lpath\n";
+		return 1;
+	    }
+	}
+    }
+
+    return 0;
+}
+
+#   Return a temporary name to upload the file as.
+# FIXME: need to allow for case insensitive filesystem
+sub tempnam
+{
+    local( $path ) = @_;
+
+    $path .= "-in";
+    return $path if $rem_type{ $path } eq "" && $loc_type{ $path } eq "";
+
+    $path .= "0";
+    while ( $rem_type{ $path } ne "" || $loc_type{ $path } ne "" )
+    {
+	$path++;
+    }
+
+    return $path;
+}
+
+#   Delete all paths on the remote server that should no longer be there
+sub delete
+{
+    &do_delete;
+}
+
+#   Upload to the server all new and modified paths.
+sub upload
+{
+    &upload_new;
+    &upload_modified;
+}
+
+#   Upload to the server all new paths.
+sub upload_new
+{
+    &do_upload( 0 );
+}
+
+#   Upload to the server all modified paths.
+sub upload_modified
+{
+    &do_upload( 1 );
+}
+
+#   Function to actually perform the deletes.
+sub do_delete
+{
+    for $path ( reverse sort @rem_path )
+    {
+	if ( $rem_type{ $path } ne $loc_type{ $path } )
+	{
+	    if ( $rem_type{ $path } eq "d" )
+	    {
+		print "rmdir  $path\n" unless $opt_q;
+		$ftp->rmdir( $base.$path ) || $ftp->status == Net::FTP::CMD_OK
+		    || &ftp_error( $path, "rmdir failed", $ftp )
+			unless $opt_n;
+	    }
+	    else
+	    {
+		print "delete $path\n" unless $opt_q;
+		$ftp->delete( $base.$path )
+		    || &ftp_error( $path, "delete failed", $ftp )
+			unless $opt_n;
+	    }
+	}
+    }
+}
+
+#   Function to actually perform the uploads.  Pass 0: All new paths
+# Pass 1: All modified paths
+sub do_upload
+{
+    local($pass) = @_;
+
+    for $path ( sort @loc_path )
+    {
+	if ( $pass == 0 )
+	{
+	    # Pass 0: Upload new files/directories
+	    next if $rem_type{ $path } eq $loc_type{ $path };
+	}
+	else
+	{
+	    # Pass 1: Upload modified files/directories
+	    next if $rem_type{ $path } ne $loc_type{ $path };
+	}
+
+	# print "Pass $pass: $path $loc_type{ $path } $rem_type{ $path }\n";
+
+	if ( $loc_type{ $path } eq "d" )
+	{
+	    if ( $rem_type{ $path } ne "d" )
+	    {
+		print "mkdir  $path\n" unless $opt_q;
+		$ftp->mkdir( $base.$path )
+		    # Ignore error for now, as only more recent versions of
+		    # Net::FTP deal with servers that fail to follow RFC959.
+		    # || &ftp_error( $path, "mkdir failed", $ftp )
+			unless $opt_n;
+	    }
+	}
+	else
+	{
+	    if ( $loc_time{ $path } + $timewarp > $rem_time{ $path } || $opt_F )
+	    {
+		print "upload $path\n" unless $opt_q;
+		if ( $path =~ m/$text/o )
+		{
+		    $ftp->ascii()
+			|| &ftp_error( $path, "mode ascii", $ftp )
+			    unless $opt_n;
+		}
+		else
+		{
+		    $ftp->binary()
+			|| &ftp_error( $path, "mode binary", $ftp )
+			    unless $opt_n;
+		}
+		$temp = &tempnam( $path );
+		$ftp->put( $loc_dir.$path, $base.$temp )
+		    || &ftp_error( $path, "put failed", $ftp )
+			unless $opt_n;
+		$ftp->delete( $base.$path )
+		    || &ftp_error( $path, "delete failed", $ftp )
+			unless $rem_type{ $path } ne "f" || ! $win32 || $opt_n;
+		$ftp->rename( $base.$temp, $base.$path ) 
+		    || &ftp_error( $path, "rename failed", $ftp )
+			unless $opt_n;
+	    }
+	    else
+	    {
+		print "leave  $path\n" if $opt_v;
+	    }
+	    if ( $chmod )
+	    {
+		if ( $loc_time{ $path } + $timewarp > $rem_time{ $path }
+		    || $loc_mode{ $path } ne $rem_mode{ $path } )
+		{
+		    print "chmod $loc_mode{ $path } $path\n" unless $opt_q;
+		    $ftp->site( "CHMOD", $loc_mode{ $path }, $base.$path ) 
+			|| &ftp_error( $path, "chmod failed", $ftp )
+			    unless $opt_n;
+		}
+	    }
+	}
+    }
+}
+
+# Print out error message after failure with the FTP server, and die.
+sub ftp_error
+{
+    local( $path, $message, $ftp ) = @_;
+
+    die "$0: $path: $message: \"", &nonl( $ftp->message ), "\"\n"
+}
 
 #   Given the fields from the output of 'ls -l', either of the form of
 # "Jul 31 12:32" or "Jul 31 1996", return the time as the number of
@@ -461,6 +630,25 @@ sub ls2time
     }
 
     timegm(59,$mn,$hr,$date,$mo,$yr);
+}
+
+#   Given the permission field from the output of 'ls -l', return the mode 
+# as an octal number.
+sub ls2mode
+{
+    local( $perm ) = @_;
+    local( $_, $mode );
+
+    $mode = 0;
+    for ( $perm =~ m/(...)(...)(...)$/ )
+    {
+	$mode <<= 3;
+	$mode |= 4 if /r../;
+	$mode |= 2 if /.w./;
+	$mode |= 1 if /..[stx]/;
+    }
+
+    return sprintf( "0%03o", $mode );
 }
 
 #   Convert a time given as seconds since the epoch into a short form
