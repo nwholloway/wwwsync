@@ -4,7 +4,7 @@
 #  Email : Nick.Holloway@alfie.demon.co.uk
 #    WWW : http://www.alfie.demon.co.uk/
 
-$RCSid = '$Id: wwwsync,v 1.8 1999/04/10 15:29:59 alfie Exp alfie $';
+$RCSid = '$Id: wwwsync,v 1.9 1999/05/15 07:44:48 alfie Exp alfie $';
 $help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
@@ -248,7 +248,7 @@ while ( @dirs )
     {
 	chomp;
 	print STDERR "<<< $_\n" if $opt_D;
-	if ( /^-([r-][w-][x-]){3}\s+/ )
+	if ( /^-([r-][w-][sStTx-]){3}\s+/ )
 	{
 	    @x = split( ' ', $_, 9 );
 
@@ -263,7 +263,7 @@ while ( @dirs )
 
 	    print &time2ls( $rem_time{ $path } ), " $path\n" if $opt_v;
 	}
-	elsif ( /^d([r-][w-][x-]){3}\s+/ )
+	elsif ( /^d([r-][w-][sStTx-]){3}\s+/ )
 	{
 	    next if ! $recurse;
 
@@ -285,7 +285,7 @@ while ( @dirs )
 	{
 	    next;
 	}
-	elsif ( /^[cblps]([r-][w-][x-]){3}\s+/ )
+	elsif ( /^[cblps]([r-][w-][sStTx-]){3}\s+/ )
 	{
 	    @x = split( ' ', $_, 9 );
 	    $path = "$dir/$x[8]";
