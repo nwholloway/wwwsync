@@ -4,7 +4,7 @@
 #  Email : Nick.Holloway@alfie.demon.co.uk
 #    WWW : http://www.alfie.demon.co.uk/
 
-$RCSid = '$Id: wwwsync,v 1.2 1996/08/08 11:06:20 alfie Exp alfie $';
+$RCSid = '$Id: wwwsync,v 1.3 1996/08/13 19:38:58 alfie Exp alfie $';
 $help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
@@ -29,7 +29,6 @@ EOF
 use Getopt::Std;
 use Net::FTP;
 use Time::Local;
-use POSIX strstr;
 
 # ---------------------------------------------------------------------------
 # User Serviceable Parts.  Either edit to taste, use a config file with
@@ -72,8 +71,8 @@ if ( $opt_f )
 {
     die "$0: can't read config file \"$opt_f\"\n" unless -r $opt_f;
     local( @INC ) = ( '.' );
-    eval 'do $opt_f';
-    die $@ if $@;
+    do $opt_f;
+    die "$0: error loading config file:\n$@" if $@;
 }
 
 $loc_dir  = $opt_l if $opt_l;
@@ -309,9 +308,13 @@ $ftp->quit()
 # suddenly uploaded again).
 sub ls2time
 {
-    local( $month, $date, $timeoryear ) = @_; local( $yr, $mo, $hr, $mn );
+    local( $month, $date, $timeoryear ) = @_;
+    local( $yr, $mo, $hr, $mn );
+    local( %month ) = ( 'Jan', 1, 'Feb', 2, 'Mar', 3, 'Apr', 4,
+			'May', 5, 'Jun', 6, 'Jul', 7, 'Aug', 8,
+			'Sep', 9, 'Oct', 10, 'Nov', 11, 'Dec', 12 );
 
-    $mo = strstr( "JanFebMarAprMayJunJulAugSepOctNovDec", $month ) / 3;
+    $mo = $month{ $month } -1;
 
     if ( $timeoryear =~ /^(\d+):(\d+)$/ )
     {
