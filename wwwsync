@@ -1,0 +1,271 @@
+#! /usr/bin/perl
+
+# ---------------------------------------------------------------------------
+
+$ftphost = "homepages.demon.co.uk";
+
+$loc_dir = "/home/alfie/homepage";
+
+@rem_ignore = ( '/count.txt' );
+@loc_ignore = ( );
+
+@text = ( '*.htm', '*.html', '*.txt', '*.map' );
+
+# ---------------------------------------------------------------------------
+
+$RCSid = '$Id$';
+
+use Getopt::Std;
+use Net::FTP;
+use Time::Local;
+use POSIX strstr;
+
+$0 =~ s%.*/%%;
+$0 =~ s%\.pl$%%;
+
+die "usage: $0 [ -n ] [ -v ] [ -q ]\n"
+  . "   or: $0 -h\n"
+  . "   or: $0 -V\n"
+    unless getopts( 'nvqhVD' ) && @ARGV == 0;
+
+die <<'EOF' if $opt_h;
+WWWSync:
+    Compares the directory structure locally with that currently stored
+    on the ftp server.  Any files and directories that no longer exist
+    locally are removed, then any new or updated directories and files
+    are created.
+options:
+    -h: this help message and exit
+    -V: display the revision and exit
+    -n: just display the actions that would be taken, not perform them
+    -q: operate quietly
+    -v: be more verbose in reporting
+EOF
+
+die "WWWSync: $RCSid\n" if $opt_V;
+
+# ---------------------------------------------------------------------------
+print "Scanning local directory... \n" unless $opt_q;
+
+@dir = ( $loc_dir );
+while ( @dir )
+{
+    $dir = pop @dir;
+    opendir( DIR, $dir ) 
+	|| die "$0: can't read directory \"$dir\": $!\n";
+    while ( $file = readdir( DIR ) )
+    {
+	next if $file =~ /^\.\.?$/;		# Skip "." and ".."
+
+	$path = substr( $dir, length( $loc_dir )  ) . "/$file";
+
+	if ( -d "$dir/$file" )
+	{
+	    push( @dir, "$dir/$file" );
+
+	    push( @loc_path, $path );
+	    $loc_type{ $path } = "d";
+	    print "--- -- --:-- $path\n" if $opt_v;
+	}
+	elsif ( -f _ )
+	{
+	    if ( ! &match( $path, @loc_ignore ) )
+	    {
+		push( @loc_path, $path );
+		$loc_type{ $path } = "f";
+		$loc_time{ $path } = ( stat( _ ) )[9];
+		print &time2ls( $loc_time{ $path } ), " $path\n"
+		    if $opt_v;
+	    }
+	}
+	else
+	{
+	    warn "ignoring \"$path\": not a file or directory\n";
+	}
+    }
+    closedir DIR;
+}
+
+# ---------------------------------------------------------------------------
+print "Connecting to ftp server... \n" unless $opt_q;
+
+$ftp = Net::FTP->new( $ftphost );
+$ftp->debug( 1 ) if $opt_D;
+
+$ftp->login();
+
+$rem_dir = $ftp->pwd();
+
+# ---------------------------------------------------------------------------
+print "Scanning remote directory... \n" unless $opt_q;
+
+@list = $ftp->ls( '-lRa' );
+
+$dir = "";
+for $_ ( @list )
+{
+    if ( /^-([r-][w-][x-]){3}\s+/ )
+    {
+	chomp;
+	@x = split( ' ', $_, 9 );
+
+	$path = "$dir/$x[8]";
+
+	next if &match( $path, @rem_ignore );
+
+	push( @rem_path, $path );
+	$rem_time{ $path } = &ls2time( $x[5], $x[6], $x[7] );
+	$rem_type{ $path } = "f";
+
+	print &time2ls( $rem_time{ $path } ), " $path\n" if $opt_v;
+    }
+    elsif ( /^d([r-][w-][x-]){3}\s+/ || /^$/ || /^total \d+$/ )
+    {
+	next;
+    }
+    elsif ( /^(.*):$/ )
+    {
+	$dir = $1;
+	$dir =~ s|^\.||;
+	push( @rem_path, $dir );
+	$rem_type{ $dir } = "d";
+	print "--- -- --:-- $dir\n" if $opt_v;
+    }
+    else
+    {
+	warn "Bogus: $_";
+    }
+}
+
+# ---------------------------------------------------------------------------
+print "Updating remote directory...\n" unless $opt_q;
+
+# Scan remote list, deleting files and directories that should no longer exist
+for $path ( reverse @rem_path )
+{
+    if ( $rem_type{ $path } ne $loc_type{ $path } )
+    {
+	if ( $rem_type{ $path } eq "d" )
+	{
+	    print "rmdir  $path\n" unless $opt_q;
+	    $ftp->RMD( $rem_dir.$path ) unless $opt_n;
+	}
+	else
+	{
+	    print "delete $path\n" unless $opt_q;
+	    $ftp->DELE( $rem_dir.$path ) unless $opt_n;
+	}
+    }
+}
+
+# Scan local list, making directories that are don't exist on the ftp
+# server, and uploading files that are either new or changed.
+for $path ( @loc_path )
+{
+    if ( $loc_type{ $path } eq "d" )
+    {
+	if ( $rem_type{ $path } ne "d" )
+	{
+	    print "mkdir  $path\n" unless $opt_q;
+	    $ftp->MKD( $rem_dir.$path ) unless $opt_n;
+	}
+    }
+    else
+    {
+	if ( $loc_time{ $path } > $rem_time{ $path } )
+	{
+	    if ( &match( $path, @text ) )
+	    {
+		$ftp->ascii();
+	    }
+	    else
+	    {
+		$ftp->binary();
+	    }
+	    print "upload $path\n" unless $opt_q;
+	    $ftp->put( $loc_dir.$path, $rem_dir.$path."-in" ) unless $opt_n;
+	    $ftp->rename( $rem_dir.$path."-in", $rem_dir.$path ) unless $opt_n;
+	}
+	else
+	{
+	    print "leave  $path\n" if $opt_v;
+	}
+    }
+}
+
+# ---------------------------------------------------------------------------
+print "Done.\n" unless $opt_q;
+
+$ftp->quit;
+
+# ---------------------------------------------------------------------------
+
+#   Given the fields from the output of 'ls -l', either of the form of
+# "Jul 31 12:32" or "Jul 31 1996", return the time as the number of
+# seconds since the epoch.  Times are in GMT.
+#   If the time is given "12:32", then the nearest year for the month is
+# chosen.  If a year is given, then the time is assumed to be "23:59"
+# (this is so that when remote files become > 3 months old, they are not
+# suddenly uploaded again).
+sub ls2time
+{
+    local( $month, $date, $timeoryear ) = @_; local( $yr, $mo, $hr, $mn );
+
+    $mo = strstr( "JanFebMarAprMayJunJulAugSepOctNovDec", $month ) / 3;
+
+    if ( $timeoryear =~ /^(\d+):(\d+)$/ )
+    {
+	$hr = $1; $mn = $2;
+	local($year, $month) = ( gmtime( time ) )[ 5, 4 ];
+	$yr = $year;
+	if ( $mo > $month && $mo - $month > 6 )
+	{
+	    $yr--;
+	}
+	elsif ( $month > $mo && $month - $mo > 6 )
+	{
+	    $yr++;
+	}
+    }
+    else
+    {
+	$hr = 23; $mn = 59;
+	$yr = $timeoryear - 1900;
+    }
+
+    timegm(59,$mn,$hr,$date,$mo,$yr);
+}
+
+#   Convert a time given as seconds since the epoch into a short form
+# as used in 'ls -l'.  Eg "Jan  1 12:43", or "Aug  1  1996" (for dates
+# greater than 3 months ago, or more than 1 month into the future).
+sub time2ls
+{
+    local( $time ) = @_;
+    local( $s ) = scalar gmtime( $time );
+
+    if ( $^T - $time < 90 * 24 * 60 * 60
+	&& $time - $^T < 30 * 24 * 60 * 60 )
+    {
+	substr( $s, 4, 12 );
+    }
+    else
+    {
+	substr( $s, 4, 7 ).substr( $s, 19, 5 );
+    }
+}
+
+#   Return true if the path given matches any one of the shell style
+# glob patterns.
+sub match
+{
+    local( $path, @ignore ) = @_;
+
+    local( $pattern ) = '^(' . join( '|', @ignore ) . ')$';
+
+    $pattern =~ s/\./\\./g;
+    $pattern =~ s/\*/.*/g;
+    $pattern =~ s/\?/./g;
+
+    $path =~ m/$pattern/;
+}
