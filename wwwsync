@@ -1,48 +1,95 @@
 #! /usr/bin/perl
+# WWWSync: Upload new modifications to your WWW pages by ftp.
+# Author : Nick Holloway 
+#  Email : Nick.Holloway@alfie.demon.co.uk
+#    WWW : http://www.alfie.demon.co.uk/
 
-# ---------------------------------------------------------------------------
-
-$ftphost = "homepages.demon.co.uk";
-
-$loc_dir = "/home/alfie/homepage";
-
-@rem_ignore = ( '/count.txt' );
-@loc_ignore = ( );
-
-@text = ( '*.htm', '*.html', '*.txt', '*.map' );
-
-# ---------------------------------------------------------------------------
-
-$RCSid = '$Id$';
-
-use Getopt::Std;
-use Net::FTP;
-use Time::Local;
-use POSIX strstr;
-
-$0 =~ s%.*/%%;
-$0 =~ s%\.pl$%%;
-
-die "usage: $0 [ -n ] [ -v ] [ -q ]\n"
-  . "   or: $0 -h\n"
-  . "   or: $0 -V\n"
-    unless getopts( 'nvqhVD' ) && @ARGV == 0;
-
-die <<'EOF' if $opt_h;
+$RCSid = '$Id: wwwsync,v 1.1 1996/08/04 15:54:24 alfie Exp alfie $';
+$help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
     on the ftp server.  Any files and directories that no longer exist
     locally are removed, then any new or updated directories and files
     are created.
 options:
-    -h: this help message and exit
-    -V: display the revision and exit
-    -n: just display the actions that would be taken, not perform them
-    -q: operate quietly
-    -v: be more verbose in reporting
+    -H      : display this help message and exit
+    -V      : display the version and exit
+    -n      : just display the actions that would be taken, not perform them
+    -v      : be more verbose in reporting
+    -q      : operate quietly
+    -f file : read settings from configuration file
+    -l dir  : local directory for WWW pages
+    -r dir  : remote directory for WWW pages
+    -h host : ftp host to connect to
+    -u user : user to login
+    -p pass : password
 EOF
+#    -L      : convert filenames to lower case
 
+use Getopt::Std;
+use Net::FTP;
+use Time::Local;
+use POSIX strstr;
+
+# ---------------------------------------------------------------------------
+# User Serviceable Parts.  Either edit to taste, use a config file with
+# -f, or specify the individual arguments using the command line.
+
+# ftp machine to upload to
+$ftphost  = "";
+$user     = "";
+$password = "";
+
+# local directory containing WWW pages
+$loc_dir = "";
+$rem_dir = "";
+
+# Files to ignore on the local and remote machines respectively
+@rem_ignore = ( );
+@loc_ignore = ( );
+
+# Files to upload as text (ASCII).
+@text = ( '*.htm', '*.html', '*.txt', '*.map' );
+
+# ---------------------------------------------------------------------------
+# Argument handling.  The settings above can be overridden using the
+# parameters specified in an external config file (-f), which can be
+# in turn overridden by the particular command line arguments.
+
+$0 =~ s%.*/%%;
+$0 =~ s%\.pl$%%;
+
+die "usage: $0 [-n] [-v] [-q] [-f config] [-h ftphost] [-u user] [-p password] [-l loc_dir] [-r rem_dir]\n"
+  . "   or: $0 -H (to display more information)\n"
+  . "   or: $0 -V\n"
+    unless getopts( 'nvqf:h:u:p:l:r:HVD' ) && @ARGV == 0;
+
+die $help               if $opt_H;
 die "WWWSync: $RCSid\n" if $opt_V;
+
+# ---------------------------------------------------------------------------
+if ( $opt_f )
+{
+    die "$0: can't read config file \"$opt_f\"\n" unless -r $opt_f;
+    local( @INC ) = ( '.' );
+    eval 'do $opt_f';
+    die $@ if $@;
+}
+
+$loc_dir = $opt_l if $opt_l;
+$rem_dir = $opt_r if $opt_r;
+$ftphost = $opt_h if $opt_h;
+$user    = $opt_u if $opt_u;
+$passwd  = $opt_p if $opt_p;
+
+die "$0: no local directory specified for WWW pages\n"
+    unless $loc_dir ne "";
+die "$0: $loc_dir is not a directory\n"
+    unless -d $loc_dir;
+die "$0: no remote ftp host specified\n"
+    if $ftphost eq "";
+die "$0: must specify password with user name"
+    if $user ne "" && $password eq "";
 
 # ---------------------------------------------------------------------------
 print "Scanning local directory... \n" unless $opt_q;
@@ -63,6 +110,7 @@ while ( @dir )
 	{
 	    push( @dir, "$dir/$file" );
 
+	    $path =~ tr/A-Z/a-z/ if $opt_L;
 	    push( @loc_path, $path );
 	    $loc_type{ $path } = "d";
 	    print "--- -- --:-- $path\n" if $opt_v;
@@ -92,14 +140,25 @@ print "Connecting to ftp server... \n" unless $opt_q;
 $ftp = Net::FTP->new( $ftphost );
 $ftp->debug( 1 ) if $opt_D;
 
-$ftp->login();
+if ( $user ne "" )
+{
+    $ftp->login( $user, $passwd );
+}
+else
+{
+    $ftp->login();
+}
 
-$rem_dir = $ftp->pwd();
+$ftp->cwd( $rem_dir ) if $rem_dir ne "";
+$base = $ftp->pwd();
 
 # ---------------------------------------------------------------------------
 print "Scanning remote directory... \n" unless $opt_q;
 
 @list = $ftp->ls( '-lRa' );
+
+die "Please Report!!!: nothing returned by 'ls -lRa' -- aborting\n"
+    if @list == 0;
 
 $dir = "";
 for $_ ( @list )
@@ -133,7 +192,7 @@ for $_ ( @list )
     }
     else
     {
-	warn "Bogus: $_";
+	warn "Please Report!!!:\nBogus: $_";
     }
 }
 
@@ -148,12 +207,12 @@ for $path ( reverse @rem_path )
 	if ( $rem_type{ $path } eq "d" )
 	{
 	    print "rmdir  $path\n" unless $opt_q;
-	    $ftp->RMD( $rem_dir.$path ) unless $opt_n;
+	    $ftp->RMD( $base.$path ) unless $opt_n;
 	}
 	else
 	{
 	    print "delete $path\n" unless $opt_q;
-	    $ftp->DELE( $rem_dir.$path ) unless $opt_n;
+	    $ftp->DELE( $base.$path ) unless $opt_n;
 	}
     }
 }
@@ -167,7 +226,7 @@ for $path ( @loc_path )
 	if ( $rem_type{ $path } ne "d" )
 	{
 	    print "mkdir  $path\n" unless $opt_q;
-	    $ftp->MKD( $rem_dir.$path ) unless $opt_n;
+	    $ftp->MKD( $base.$path ) unless $opt_n;
 	}
     }
     else
@@ -183,8 +242,8 @@ for $path ( @loc_path )
 		$ftp->binary();
 	    }
 	    print "upload $path\n" unless $opt_q;
-	    $ftp->put( $loc_dir.$path, $rem_dir.$path."-in" ) unless $opt_n;
-	    $ftp->rename( $rem_dir.$path."-in", $rem_dir.$path ) unless $opt_n;
+	    $ftp->put( $loc_dir.$path, $base.$path."-in" ) unless $opt_n;
+	    $ftp->rename( $base.$path."-in", $base.$path ) unless $opt_n;
 	}
 	else
 	{
