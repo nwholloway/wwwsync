@@ -4,7 +4,7 @@
 #  Email : Nick.Holloway@alfie.demon.co.uk
 #    WWW : http://www.alfie.demon.co.uk/
 
-$RCSid = '$Id: wwwsync,v 1.1 1996/08/04 15:54:24 alfie Exp alfie $';
+$RCSid = '$Id: wwwsync,v 1.2 1996/08/08 11:06:20 alfie Exp alfie $';
 $help = <<'EOF';
 WWWSync:
     Compares the directory structure locally with that currently stored
@@ -76,11 +76,11 @@ if ( $opt_f )
     die $@ if $@;
 }
 
-$loc_dir = $opt_l if $opt_l;
-$rem_dir = $opt_r if $opt_r;
-$ftphost = $opt_h if $opt_h;
-$user    = $opt_u if $opt_u;
-$passwd  = $opt_p if $opt_p;
+$loc_dir  = $opt_l if $opt_l;
+$rem_dir  = $opt_r if $opt_r;
+$ftphost  = $opt_h if $opt_h;
+$user     = $opt_u if $opt_u;
+$password = $opt_p if $opt_p;
 
 die "$0: no local directory specified for WWW pages\n"
     unless $loc_dir ne "";
@@ -88,8 +88,19 @@ die "$0: $loc_dir is not a directory\n"
     unless -d $loc_dir;
 die "$0: no remote ftp host specified\n"
     if $ftphost eq "";
-die "$0: must specify password with user name"
+die "$0: must specify password as well as user name\n"
     if $user ne "" && $password eq "";
+die "$0: must specify user name as well as password\n"
+    if $user eq "" && $password ne "";
+
+( $loc_ignore = &glob2re( @loc_ignore ) )
+    || die "$0: invalid value in \@loc_ignore\n";
+
+( $rem_ignore = &glob2re( @rem_ignore ) )
+    || die "$0: invalid value in \@rem_ignore\n";
+
+( $text = &glob2re( @text ) )
+    || die "$0: invalid value in \@text\n";
 
 # ---------------------------------------------------------------------------
 print "Scanning local directory... \n" unless $opt_q;
@@ -108,6 +119,9 @@ while ( @dir )
 
 	if ( -d "$dir/$file" )
 	{
+	    next if "$path/" =~ m/$loc_ignore/o;
+	    next if "$path/" =~ m/$rem_ignore/o;
+
 	    push( @dir, "$dir/$file" );
 
 	    $path =~ tr/A-Z/a-z/ if $opt_L;
@@ -117,14 +131,14 @@ while ( @dir )
 	}
 	elsif ( -f _ )
 	{
-	    if ( ! &match( $path, @loc_ignore ) )
-	    {
-		push( @loc_path, $path );
-		$loc_type{ $path } = "f";
-		$loc_time{ $path } = ( stat( _ ) )[9];
-		print &time2ls( $loc_time{ $path } ), " $path\n"
-		    if $opt_v;
-	    }
+	    next if $path =~ m/$loc_ignore/o;
+	    next if $path =~ m/$rem_ignore/o;
+
+	    push( @loc_path, $path );
+	    $loc_type{ $path } = "f";
+	    $loc_time{ $path } = ( stat( _ ) )[9];
+	    print &time2ls( $loc_time{ $path } ), " $path\n"
+		if $opt_v;
 	}
 	else
 	{
@@ -138,27 +152,37 @@ while ( @dir )
 print "Connecting to ftp server... \n" unless $opt_q;
 
 $ftp = Net::FTP->new( $ftphost );
+
 $ftp->debug( 1 ) if $opt_D;
 
 if ( $user ne "" )
 {
-    $ftp->login( $user, $passwd );
+    $ftp->login( $user, $password )
+	|| die "$0: login failed: \"", $ftp->message, "\"\n";
 }
 else
 {
-    $ftp->login();
+    $ftp->login()
+	|| die "$0: login failed: \"", $ftp->message, "\"\n";
 }
 
-$ftp->cwd( $rem_dir ) if $rem_dir ne "";
-$base = $ftp->pwd();
+$ftp->cwd( $rem_dir )
+    || die "$0: $rem_dir: unable to change directory: \"", $ftp->message, "\"\n"
+	if $rem_dir ne "";
+
+( $base = $ftp->pwd() )
+    || die "$0: can't find current directory: \"", $ftp->message, "\"\n";
 
 # ---------------------------------------------------------------------------
 print "Scanning remote directory... \n" unless $opt_q;
 
 @list = $ftp->ls( '-lRa' );
 
-die "Please Report!!!: nothing returned by 'ls -lRa' -- aborting\n"
-    if @list == 0;
+if ( @list == 0 )
+{
+    die "Please Report!!!: nothing returned by 'ls -lRa'\n",
+	"FTP message: ", $ftp->message, "\n";
+}
 
 $dir = "";
 for $_ ( @list )
@@ -170,7 +194,7 @@ for $_ ( @list )
 
 	$path = "$dir/$x[8]";
 
-	next if &match( $path, @rem_ignore );
+	next if $path =~ m/$rem_ignore/o;
 
 	push( @rem_path, $path );
 	$rem_time{ $path } = &ls2time( $x[5], $x[6], $x[7] );
@@ -186,9 +210,13 @@ for $_ ( @list )
     {
 	$dir = $1;
 	$dir =~ s|^\.||;
-	push( @rem_path, $dir );
-	$rem_type{ $dir } = "d";
-	print "--- -- --:-- $dir\n" if $opt_v;
+
+	if ( "$dir/" !~ m/$rem_ignore/o )
+	{
+	    push( @rem_path, $dir );
+	    $rem_type{ $dir } = "d";
+	    print "--- -- --:-- $dir\n" if $opt_v;
+	}
     }
     else
     {
@@ -207,12 +235,16 @@ for $path ( reverse @rem_path )
 	if ( $rem_type{ $path } eq "d" )
 	{
 	    print "rmdir  $path\n" unless $opt_q;
-	    $ftp->RMD( $base.$path ) unless $opt_n;
+	    $ftp->RMD( $base.$path ) 
+		|| die "$0: $path: rmdir failed: \"", $ftp->message, "\"\n"
+		    unless $opt_n;
 	}
 	else
 	{
 	    print "delete $path\n" unless $opt_q;
-	    $ftp->DELE( $base.$path ) unless $opt_n;
+	    $ftp->DELE( $base.$path )
+		|| die "$0: $path: delete failed: \"", $ftp->message, "\"\n"
+		    unless $opt_n;
 	}
     }
 }
@@ -226,24 +258,32 @@ for $path ( @loc_path )
 	if ( $rem_type{ $path } ne "d" )
 	{
 	    print "mkdir  $path\n" unless $opt_q;
-	    $ftp->MKD( $base.$path ) unless $opt_n;
+	    $ftp->MKD( $base.$path )
+		|| die "$0: $path: mkdir failed: \"", $ftp->message, "\"\n"
+		    unless $opt_n;
 	}
     }
     else
     {
 	if ( $loc_time{ $path } > $rem_time{ $path } )
 	{
-	    if ( &match( $path, @text ) )
+	    print "upload $path\n" unless $opt_q;
+	    if ( $path =~ m/$text/o )
 	    {
-		$ftp->ascii();
+		$ftp->ascii()
+		    || die "$0: mode ascii: \"", $ftp->message, "\"\n";
 	    }
 	    else
 	    {
-		$ftp->binary();
+		$ftp->binary()
+		    || die "$0: mode binary: \"", $ftp->message, "\"\n";
 	    }
-	    print "upload $path\n" unless $opt_q;
-	    $ftp->put( $loc_dir.$path, $base.$path."-in" ) unless $opt_n;
-	    $ftp->rename( $base.$path."-in", $base.$path ) unless $opt_n;
+	    $ftp->put( $loc_dir.$path, $base.$path."-in" )
+		|| die "$0: $path: put failed: \"", $ftp->message, "\"\n"
+		    unless $opt_n;
+	    $ftp->rename( $base.$path."-in", $base.$path ) 
+		|| die "$0: $path: rename failed: \"", $ftp->message, "\"\n"
+		    unless $opt_n;
 	}
 	else
 	{
@@ -255,7 +295,8 @@ for $path ( @loc_path )
 # ---------------------------------------------------------------------------
 print "Done.\n" unless $opt_q;
 
-$ftp->quit;
+$ftp->quit()
+    || warn "$0: quit returned: \"", $ftp->message, "\"\n";
 
 # ---------------------------------------------------------------------------
 
@@ -314,17 +355,26 @@ sub time2ls
     }
 }
 
-#   Return true if the path given matches any one of the shell style
-# glob patterns.
-sub match
+#   Convert an array of shell-style glob patterns into a regular expression
+# Returns undef if the resultant regular expression is not valid.
+sub glob2re
 {
-    local( $path, @ignore ) = @_;
+    local( @pattern ) = @_;
+    local( $pattern );
 
-    local( $pattern ) = '^(' . join( '|', @ignore ) . ')$';
+    # Convert elements of glob to regular expression
+    for $pattern ( @pattern )
+    {
+	$pattern =~ s/\./\\./g;
+	$pattern =~ s/\+/\\+/g;
+	$pattern =~ s/\*/.*/g;
+	$pattern =~ s/\?/./g;
+    }
 
-    $pattern =~ s/\./\\./g;
-    $pattern =~ s/\*/.*/g;
-    $pattern =~ s/\?/./g;
+    # Join to form single regular expression
+    $pattern = '^(' . join( '|', @pattern ) . ')$';
 
-    $path =~ m/$pattern/;
+    eval '/$pattern/';			# Test R.E.
+
+    $@ ? undef : $pattern;
 }
